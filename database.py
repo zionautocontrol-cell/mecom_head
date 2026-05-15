@@ -109,6 +109,31 @@ def get_sites() -> list:
     return [dict(r) for r in rows]
 
 
+def get_site(site_id: str) -> Optional[dict]:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_site(site_id: str, name: str = "", api_key: str = "") -> bool:
+    conn = get_conn()
+    cursor = conn.execute("UPDATE sites SET name = COALESCE(NULLIF(?, ''), name), api_key = COALESCE(NULLIF(?, ''), api_key) WHERE id = ?", (name, api_key, site_id))
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    return affected > 0
+
+
+def delete_site(site_id: str) -> bool:
+    conn = get_conn()
+    cursor = conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    return affected > 0
+
+
 def get_recent_realtime(site_id: str, limit: int = 100) -> list:
     conn = get_conn()
     rows = conn.execute(
@@ -126,5 +151,21 @@ def get_alarms(site_id: Optional[str] = None, limit: int = 50) -> list:
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM alarms ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_daily_reports(site_id: Optional[str] = None, limit: int = 10) -> list:
+    conn = get_conn()
+    if site_id:
+        rows = conn.execute(
+            "SELECT id, site_id, report_date, created_at FROM daily_reports WHERE site_id = ? ORDER BY id DESC LIMIT ?",
+            (site_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, site_id, report_date, created_at FROM daily_reports ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

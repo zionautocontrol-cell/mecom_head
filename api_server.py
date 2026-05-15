@@ -1,22 +1,27 @@
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import DB_PATH, HOST, PORT, TRUSTED_API_KEYS
 from database import (
+    delete_site,
     get_alarms,
+    get_daily_reports,
     get_recent_realtime,
+    get_site,
     get_sites,
     init_db,
     register_site,
     save_alarm,
     save_daily_report,
     save_realtime,
+    update_site,
 )
 
 app = FastAPI(title="MECOM Head Office Server")
@@ -30,26 +35,78 @@ def verify_request(request: Request):
     api_key = request.headers.get("X-API-Key", "")
     if not site_id:
         raise HTTPException(status_code=400, detail="Missing X-Site-ID header")
-    if TRUSTED_API_KEYS and api_key != TRUSTED_API_KEYS.get(site_id, api_key):
+    expected_key = TRUSTED_API_KEYS.get(site_id) if TRUSTED_API_KEYS else None
+    if expected_key is not None and api_key != expected_key:
         raise HTTPException(status_code=403, detail="Invalid API key")
     return site_id
 
 
+def verify_admin(request: Request):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    from config import ADMIN_USERNAME, ADMIN_PASSWORD
+    token = auth[7:]
+    try:
+        decoded = json.loads(token)
+        if decoded.get("user") != ADMIN_USERNAME or decoded.get("pass") != ADMIN_PASSWORD:
+            raise ValueError
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid admin credentials")
+    return True
+
+
 @app.get("/")
 def root():
-    return {"status": "ok", "server": "MECOM Head Office"}
+    return {"status": "ok", "server": "MECOM Head Office", "version": "1.0"}
 
+
+# ── Site management ──────────────────────────────────────
 
 @app.get("/sites")
 def list_sites():
     return get_sites()
 
 
+@app.get("/sites/{site_id}")
+def get_site_detail(site_id: str):
+    site = get_site(site_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return site
+
+
 @app.post("/api/register")
 def api_register(site_id: str, name: str = "", api_key: str = ""):
-    ok = register_site(site_id, name, api_key)
-    return {"success": ok, "site_id": site_id}
+    local_auth = TRUSTED_API_KEYS.get(site_id) if TRUSTED_API_KEYS else None
+    if local_auth and api_key != local_auth:
+        raise HTTPException(status_code=403, detail="API key mismatch")
+    ok = register_site(site_id, name or site_id, api_key)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Site already exists")
+    return {"success": True, "site_id": site_id}
 
+
+@app.delete("/api/sites/{site_id}")
+def api_delete_site(site_id: str):
+    ok = delete_site(site_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return {"success": True, "site_id": site_id}
+
+
+@app.put("/api/sites/{site_id}")
+async def api_update_site(site_id: str, request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    api_key = body.get("api_key", "")
+    ok = update_site(site_id, name, api_key)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return {"success": True, "site_id": site_id}
+
+
+# ── Data ingestion endpoints ─────────────────────────────
 
 @app.post("/api/daily-report")
 async def api_daily_report(request: Request):
@@ -98,14 +155,31 @@ async def api_realtime(request: Request):
     return {"success": True}
 
 
+# ── Data query endpoints ─────────────────────────────────
+
 @app.get("/api/alarms")
-def api_get_alarms(site_id: str = "", limit: int = 50):
-    return get_alarms(site_id or None, limit)
+def api_get_alarms(site_id: Optional[str] = Query(None), limit: int = 50):
+    return get_alarms(site_id, limit)
 
 
 @app.get("/api/realtime-log")
 def api_get_realtime_log(site_id: str, limit: int = 100):
     return get_recent_realtime(site_id, limit)
+
+
+@app.get("/api/daily-reports")
+def api_get_daily_reports(site_id: Optional[str] = Query(None), limit: int = 10):
+    return get_daily_reports(site_id, limit)
+
+
+@app.get("/api/health")
+def api_health():
+    sites = get_sites()
+    return {
+        "status": "healthy",
+        "site_count": len(sites),
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
 if __name__ == "__main__":
